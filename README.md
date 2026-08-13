@@ -1,4 +1,4 @@
-# RW-Template
+# RW-Template 2.0
 
 Badges below (Downloads and Stars) update automatically every 5-15 minutes
 
