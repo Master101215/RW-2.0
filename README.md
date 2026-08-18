@@ -1,11 +1,5 @@
 # RW-Template 2.0
 
-Badges below (Downloads and Stars) update automatically every 5-15 minutes
-
-[<img src="https://img.shields.io/github/downloads/richardbwang/RW-Template/total?style=for-the-badge">](https://github.com/richardbwang/RW-Template/releases)
-
-[<img src="https://img.shields.io/github/stars/richardbwang/RW-Template?style=for-the-badge">](https://github.com/richardbwang/RW-Template/stargazers)
-
 ## 📦 Project Description
 
 Welcome to RW-Template! This project is an advanced **VEX V5 autonomous robotics template** focused on precise, algorithm-driven motion planning and control. It is designed for teams who want robust, adaptable autonomous routines with support for a wide range of sensor and drive configurations.
