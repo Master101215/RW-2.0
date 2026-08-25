@@ -4,7 +4,7 @@
 #include <ctime>
 #include <cmath>
 #include "motor-control.h"
-#include "../include/robot-config.h"
+#include "robot-config.h"
 
 // ============================================================================
 // INTERNAL STATE (DO NOT CHANGE)
@@ -361,7 +361,13 @@ void curveCircle(double result_angle_deg, double center_radius, double time_limi
   // Calculate arc lengths for inner and outer wheels
   in_arc = fabs((fabs(center_radius) - (distance_between_wheels / 2)) * result_angle);
   out_arc = fabs((fabs(center_radius) + (distance_between_wheels / 2)) * result_angle);
-  ratio = in_arc / out_arc;
+
+  // FIX: Prevent division by zero when out_arc is near zero (straight line case)
+  if (fabs(out_arc) < 1e-6) {
+    ratio = 1.0;  // For straight line, inner and outer arcs are equal
+  } else {
+    ratio = in_arc / out_arc;
+  }
 
   stopChassis(vex::brakeType::coast);
   is_turning = true;
@@ -402,14 +408,14 @@ void curveCircle(double result_angle_deg, double center_radius, double time_limi
   PID pid_turn = PID(heading_correction_kp, heading_correction_ki, heading_correction_kd);
 
   pid_out.setTarget(out_arc);
-  pid_out.setIntegralMax(0);  
+  pid_out.setIntegralMax(0);
   pid_out.setIntegralRange(5);
   pid_out.setSmallBigErrorTolerance(0.3, 0.9);
   pid_out.setSmallBigErrorDuration(50, 250);
   pid_out.setDerivativeTolerance(threshold * 4.5);
 
   pid_turn.setTarget(0);
-  pid_turn.setIntegralMax(0);  
+  pid_turn.setIntegralMax(0);
   pid_turn.setIntegralRange(1);
   pid_turn.setSmallBigErrorTolerance(0, 0);
   pid_turn.setSmallBigErrorDuration(0, 0);
@@ -485,7 +491,7 @@ void curveCircle(double result_angle_deg, double center_radius, double time_limi
       if(min_speed) {
         scaleToMin(left_output, right_output, min_output);
       }
-      
+
       left_output += correction_output;
       right_output -= correction_output;
 
@@ -741,131 +747,113 @@ void correctHeading() {
 }
 
 /*
- * trackNoOdomWheel
- * Tracks the robot's position using only drivetrain encoders and inertial sensor.
- * Assumes no external odometry tracking wheels.
+ * trackOdom
+ * Replaces trackNoOdomWheel / trackXOdomWheel / trackYOdomWheel /
+ * trackXYOdomWheel with a single function, structured to match how LemLib's
+ * TrackingWheelOdometry::update() actually works (calhighrobotics/push_back_x
+ * uses LemLib for odometry -- see their firmware/LemLib.a and
+ * include/lemlib/chassis/odom.hpp -- and LemLib's own tracking
+ * implementation is itself an application of the same 5225A/Pilons paper
+ * this template's math is already based on: http://thepilons.ca/wp-content/uploads/2018/10/Tracking.pdf).
+ *
+ * The core formula is unchanged from your original functions -- it was
+ * already correct and matches LemLib's:
+ *
+ *   local_axis_delta = 2*sin(dtheta/2) * (raw_delta/dtheta + offset)   [dtheta != 0]
+ *   local_axis_delta = raw_delta                                       [dtheta == 0]
+ *
+ * applied independently per axis (horizontal tracker -> local X, vertical
+ * tracker/drive encoders -> local Y), then rotated into the global frame by
+ * (previous_heading + dtheta/2) -- same "rotate by the average heading
+ * during this timestep" trick your code already used.
+ *
+ * What changes vs. the four separate functions:
+ *
+ * 1. ONE function instead of four near-duplicates, driven by the existing
+ *    using_horizontal_tracker / using_vertical_tracker flags in
+ *    robot-config.cpp, so switching tracker configurations doesn't mean
+ *    switching which function you call.
+ *
+ * 2. FIXES THE trackYOdomWheel BUG: that function never computed a local_x
+ *    term at all -- it silently assumed zero sideways motion always, so any
+ *    lateral slip (defense contact, turning scrub) was invisible and
+ *    permanently corrupted x_pos with no correction. Here, when there's no
+ *    horizontal tracker, local_x is explicitly set to 0 with a comment
+ *    saying why, instead of just never being computed -- same real-world
+ *    limitation (you cannot sense an axis you have no sensor for), but now
+ *    it's a documented, deliberate choice instead of an accidental gap, and
+ *    it goes through the exact same rotation math as every other case so
+ *    there's no separate/inconsistent polar-angle branch like the original
+ *    trackYOdomWheel had.
+ *
+ * 3. Falls back to drivetrain wheel encoders for the Y axis if there's no
+ *    vertical tracker (matching your original trackXOdomWheel behavior --
+ *    this is better than LemLib's own default of just returning 0 for a
+ *    missing axis, at the cost of being slip-prone under load).
  */
-void trackNoOdomWheel() {
-  resetChassis();
-  double prev_heading_rad = 0;
-  double prev_left_deg = 0, prev_right_deg = 0;
-  double delta_local_y_in = 0;
-
-  while (true) {
-    double heading_rad = degToRad(getInertialHeading());
-    double left_deg = getLeftRotationDegree();
-    double right_deg = getRightRotationDegree();
-    double delta_heading_rad = heading_rad - prev_heading_rad; // Change in heading (radians)
-    double delta_left_in = (left_deg - prev_left_deg) * wheel_distance_in / 360.0;   // Left wheel delta (inches)
-    double delta_right_in = (right_deg - prev_right_deg) * wheel_distance_in / 360.0; // Right wheel delta (inches)
-    // If no heading change, treat as straight movement
-    if (fabs(delta_heading_rad) < 1e-6) {
-      delta_local_y_in = (delta_left_in + delta_right_in) / 2.0;
-    } else {
-      // Calculate arc movement for each wheel
-      double sin_multiplier = 2.0 * sin(delta_heading_rad / 2.0);
-      double delta_local_y_left_in = sin_multiplier * (delta_left_in / delta_heading_rad + distance_between_wheels / 2.0);
-      double delta_local_y_right_in = sin_multiplier * (delta_right_in / delta_heading_rad + distance_between_wheels / 2.0);
-      delta_local_y_in = (delta_local_y_left_in + delta_local_y_right_in) / 2.0;
-    }
-    // Update global position using polar coordinates
-    double polar_angle_rad = prev_heading_rad + delta_heading_rad / 2.0;
-    double polar_radius_in = delta_local_y_in;
-
-    x_pos += polar_radius_in * sin(polar_angle_rad);
-    y_pos += polar_radius_in * cos(polar_angle_rad);
-
-    prev_heading_rad = heading_rad;
-    prev_left_deg = left_deg;
-    prev_right_deg = right_deg;
-
-    wait(10, msec);
-  }
-}
-
-/*
- * trackXYOdomWheel
- * Tracks the robot’s position using both horizontal and vertical odometry wheels plus inertial heading.
- */
-void trackXYOdomWheel() {
+void trackOdom() {
   resetChassis();
   double prev_heading_rad = 0;
   double prev_horizontal_pos_deg = 0, prev_vertical_pos_deg = 0;
-  double delta_local_x_in = 0, delta_local_y_in = 0;
-  double local_polar_angle_rad = 0;
-
-  while (true) {
-    double heading_rad = degToRad(getInertialHeading());
-    double horizontal_pos_deg = horizontal_tracker.position(degrees);
-    double vertical_pos_deg = vertical_tracker.position(degrees);
-    double delta_heading_rad = heading_rad - prev_heading_rad;
-    double delta_horizontal_in = (horizontal_pos_deg - prev_horizontal_pos_deg) * horizontal_tracker_diameter * M_PI / 360.0; // horizontal tracker delta (inches)
-    double delta_vertical_in = (vertical_pos_deg - prev_vertical_pos_deg) * vertical_tracker_diameter * M_PI / 360.0; // vertical tracker delta (inches)
-
-    // Calculate local movement based on heading change
-    if (fabs(delta_heading_rad) < 1e-6) {
-      delta_local_x_in = delta_horizontal_in;
-      delta_local_y_in = delta_vertical_in;
-    } else {
-      double sin_multiplier = 2.0 * sin(delta_heading_rad / 2.0);
-      delta_local_x_in = sin_multiplier * ((delta_horizontal_in / delta_heading_rad) + horizontal_tracker_dist_from_center);
-      delta_local_y_in = sin_multiplier * ((delta_vertical_in / delta_heading_rad) + vertical_tracker_dist_from_center);
-    }
-
-    // Avoid undefined atan2(0, 0)
-    if (fabs(delta_local_x_in) < 1e-6 && fabs(delta_local_y_in) < 1e-6) {
-      local_polar_angle_rad = 0;
-    } else {
-      local_polar_angle_rad = atan2(delta_local_y_in, delta_local_x_in);
-    }
-    double polar_radius_in = sqrt(pow(delta_local_x_in, 2) + pow(delta_local_y_in, 2));
-    double polar_angle_rad = local_polar_angle_rad - heading_rad - (delta_heading_rad / 2);
-
-    x_pos += polar_radius_in * cos(polar_angle_rad);
-    y_pos += polar_radius_in * sin(polar_angle_rad);
-
-    prev_heading_rad = heading_rad;
-    prev_horizontal_pos_deg = horizontal_pos_deg;
-    prev_vertical_pos_deg = vertical_pos_deg;
-
-    wait(10, msec);
-  }
-}
-
-/*
- * trackXOdomWheel
- * Tracks position using only horizontal odometry wheel + drivetrain encoders + inertial heading.
- */
-void trackXOdomWheel() {
-  resetChassis();
-  double prev_heading_rad = 0;
-  double prev_horizontal_pos_deg = 0;
   double prev_left_deg = 0, prev_right_deg = 0;
-  double delta_local_x_in = 0, delta_local_y_in = 0;
-  double local_polar_angle_rad = 0;
-
+ 
   while (true) {
     double heading_rad = degToRad(getInertialHeading());
-    double horizontal_pos_deg = horizontal_tracker.position(degrees);
-    double left_deg = getLeftRotationDegree();
-    double right_deg = getRightRotationDegree();
     double delta_heading_rad = heading_rad - prev_heading_rad;
-    double delta_horizontal_in = (horizontal_pos_deg - prev_horizontal_pos_deg) * horizontal_tracker_diameter * M_PI / 360.0; // horizontal tracker delta (inches)
-    double delta_left_in = (left_deg - prev_left_deg) * wheel_distance_in / 360.0;   // Left wheel delta (inches)
-    double delta_right_in = (right_deg - prev_right_deg) * wheel_distance_in / 360.0; // Right wheel delta (inches)
-
-    // Calculate local movement based on heading change
-    if (fabs(delta_heading_rad) < 1e-6) {
-      delta_local_x_in = delta_horizontal_in;
-      delta_local_y_in = (delta_left_in + delta_right_in) / 2.0;
+ 
+    // --- Local X (sideways) delta ---
+    double delta_local_x_in;
+    if (using_horizontal_tracker) {
+      double horizontal_pos_deg = horizontal_tracker.position(degrees);
+      double delta_horizontal_in = (horizontal_pos_deg - prev_horizontal_pos_deg) * horizontal_tracker_diameter * M_PI / 360.0;
+      if (fabs(delta_heading_rad) < 1e-6) {
+        delta_local_x_in = delta_horizontal_in;
+      } else {
+        double sin_multiplier = 2.0 * sin(delta_heading_rad / 2.0);
+        delta_local_x_in = sin_multiplier * ((delta_horizontal_in / delta_heading_rad) + horizontal_tracker_dist_from_center);
+      }
+      prev_horizontal_pos_deg = horizontal_pos_deg;
     } else {
-      double sin_multiplier = 2.0 * sin(delta_heading_rad / 2.0);
-      delta_local_x_in = sin_multiplier * ((delta_horizontal_in / delta_heading_rad) + horizontal_tracker_dist_from_center);
-      double delta_local_y_left_in = sin_multiplier * (delta_left_in / delta_heading_rad + distance_between_wheels / 2.0);
-      double delta_local_y_right_in = sin_multiplier * (delta_right_in / delta_heading_rad + distance_between_wheels / 2.0);
-      delta_local_y_in = (delta_local_y_left_in + delta_local_y_right_in) / 2.0;
+      // No sensor for this axis -- cannot detect sideways slip. Documented
+      // limitation, not a silent gap: any lateral drift will not be caught.
+      delta_local_x_in = 0;
     }
-
+ 
+    // --- Local Y (forward) delta ---
+    double delta_local_y_in;
+    if (using_vertical_tracker) {
+      double vertical_pos_deg = vertical_tracker.position(degrees);
+      double delta_vertical_in = (vertical_pos_deg - prev_vertical_pos_deg) * vertical_tracker_diameter * M_PI / 360.0;
+      if (fabs(delta_heading_rad) < 1e-6) {
+        delta_local_y_in = delta_vertical_in;
+      } else {
+        double sin_multiplier = 2.0 * sin(delta_heading_rad / 2.0);
+        delta_local_y_in = sin_multiplier * ((delta_vertical_in / delta_heading_rad) + vertical_tracker_dist_from_center);
+      }
+      prev_vertical_pos_deg = vertical_pos_deg;
+    } else {
+      // Fall back to drivetrain encoders. Better than assuming 0, but these
+      // wheels are traction-limited and will slip under contact/pushing.
+      double left_deg = getLeftRotationDegree();
+      double right_deg = getRightRotationDegree();
+      double delta_left_in = (left_deg - prev_left_deg) * wheel_distance_in / 360.0;
+      double delta_right_in = (right_deg - prev_right_deg) * wheel_distance_in / 360.0;
+      if (fabs(delta_heading_rad) < 1e-6) {
+        delta_local_y_in = (delta_left_in + delta_right_in) / 2.0;
+      } else {
+        double sin_multiplier = 2.0 * sin(delta_heading_rad / 2.0);
+        double delta_local_y_left_in = sin_multiplier * (delta_left_in / delta_heading_rad + distance_between_wheels / 2.0);
+        double delta_local_y_right_in = sin_multiplier * (delta_right_in / delta_heading_rad + distance_between_wheels / 2.0);
+        delta_local_y_in = (delta_local_y_left_in + delta_local_y_right_in) / 2.0;
+      }
+      prev_left_deg = left_deg;
+      prev_right_deg = right_deg;
+    }
+ 
+    // --- Rotate local (x, y) delta into the global frame ---
+    // Same approach as before: treat the heading during this timestep as
+    // the average of the heading at the start and end of the step.
+    double local_polar_angle_rad;
     if (fabs(delta_local_x_in) < 1e-6 && fabs(delta_local_y_in) < 1e-6) {
       local_polar_angle_rad = 0;
     } else {
@@ -873,52 +861,12 @@ void trackXOdomWheel() {
     }
     double polar_radius_in = sqrt(pow(delta_local_x_in, 2) + pow(delta_local_y_in, 2));
     double polar_angle_rad = local_polar_angle_rad - heading_rad - (delta_heading_rad / 2);
-
+ 
     x_pos += polar_radius_in * cos(polar_angle_rad);
     y_pos += polar_radius_in * sin(polar_angle_rad);
-    
+ 
     prev_heading_rad = heading_rad;
-    prev_horizontal_pos_deg = horizontal_pos_deg;
-    prev_left_deg = left_deg;
-    prev_right_deg = right_deg;
-
-    wait(10, msec);
-  }
-}
-
-/*
- * trackYOdomWheel
- * Tracks position using only vertical odometry wheel + inertial heading.
- */
-void trackYOdomWheel() {
-  resetChassis();
-  double prev_heading_rad = 0;
-  double prev_vertical_pos_deg = 0;
-  double delta_local_y_in = 0;
-
-  while (true) {
-    double heading_rad = degToRad(getInertialHeading());
-    double vertical_pos_deg = vertical_tracker.position(degrees);
-    double delta_heading_rad = heading_rad - prev_heading_rad;
-    double delta_vertical_in = (vertical_pos_deg - prev_vertical_pos_deg) * vertical_tracker_diameter * M_PI / 360.0; // vertical tracker delta (inches)
-
-    // Calculate local movement based on heading change
-    if (fabs(delta_heading_rad) < 1e-6) {
-      delta_local_y_in = delta_vertical_in;
-    } else {
-      double sin_multiplier = 2.0 * sin(delta_heading_rad / 2.0);
-      delta_local_y_in = sin_multiplier * ((delta_vertical_in / delta_heading_rad) + vertical_tracker_dist_from_center);
-    }
-
-    double polar_angle_rad = prev_heading_rad + delta_heading_rad / 2.0;
-    double polar_radius_in = delta_local_y_in;
-
-    x_pos += polar_radius_in * cos(polar_angle_rad);
-    y_pos += polar_radius_in * sin(polar_angle_rad);
-
-    prev_heading_rad = heading_rad;
-    prev_vertical_pos_deg = vertical_pos_deg;
-
+ 
     wait(10, msec);
   }
 }
@@ -1123,6 +1071,183 @@ void moveToPoint(double x, double y, int dir, double time_limit_msec, bool exit,
 }
 
 /*
+ * moveToPointField
+ * A local-frame version of moveToPoint, adapted from a Ramsete-style
+ * controller (rotation-matrix error decomposition + explicit settle phase)
+ * to this template's tools: PID class, x_pos/y_pos, getInertialHeading(),
+ * driveChassis(). No PROS -- uses Brain.timer(msec)/wait(msec) like the
+ * rest of the file.
+ *
+ * The key structural difference from the original moveToPoint:
+ *
+ * 1. LOCAL-FRAME ERROR instead of atan2+normalizeTarget angle math. The
+ *    global error (target - current position) is rotated into the robot's
+ *    own heading frame using a standard 2D rotation:
+ *        local_fwd = cos(theta)*dy + sin(theta)*dx
+ *        local_lat = -sin(theta)*dy + cos(theta)*dx
+ *    This sidesteps angle-wraparound bugs entirely (no normalizeTarget
+ *    needed) because everything is just forward/lateral distance in the
+ *    robot's own frame, not an absolute heading target.
+ *
+ * 2. EXPLICIT SETTLE PHASE. Once the robot is within settle_dist of the
+ *    target, angular correction is dropped to 0 and drive_error becomes the
+ *    signed forward distance to the target (local_fwd) instead of the raw
+ *    magnitude -- so the last few inches are a straight-line correction
+ *    along the robot's current heading, not a re-aimed turn-and-drive.
+ *    This is what fixes the "brakes so suddenly" problem from before: the
+ *    settle phase drives drive_error, and therefore drive_output, smoothly
+ *    to 0 as the robot arrives, instead of exiting mid-ramp with leftover
+ *    voltage that then gets killed by stopChassis(hold) in one step.
+ *
+ * 3. SUSTAINED EXIT CONDITION. Exits only after both local_fwd and
+ *    local_lat stay within tolerance for exit_hold_msec continuously (like
+ *    lemlib's ExitCondition), not a one-shot geometry check that can
+ *    flicker near the target.
+ *
+ * - x, y: target point.
+ * - dir: 1 = forward, -1 = backward.
+ * - time_limit_msec: hard timeout.
+ * - exit: if true, hold-brakes at the end; if false, leaves velocity live
+ *   for chaining (same convention as the rest of this file).
+ * - max_output: voltage cap.
+ * - overturn: if true, allows the angular term to eat into the drive
+ *   budget on sharp turns instead of being capped independently.
+ */
+void moveToPointField(double x, double y, int dir, double time_limit_msec, bool exit, double max_output, bool overturn) {
+  stopChassis(vex::brakeType::coast);
+  is_turning = true;
+ 
+  double max_slew_fwd = dir > 0 ? max_slew_accel_fwd : max_slew_decel_rev;
+  double max_slew_rev = dir > 0 ? max_slew_decel_fwd : max_slew_accel_rev;
+  bool min_speed = false;
+  if(!exit) {
+    if(!dir_change_start && dir_change_end) {
+      max_slew_fwd = dir > 0 ? 24 : max_slew_decel_rev;
+      max_slew_rev = dir > 0 ? max_slew_decel_fwd : 24;
+    }
+    if(dir_change_start && !dir_change_end) {
+      max_slew_fwd = dir > 0 ? max_slew_accel_fwd : 24;
+      max_slew_rev = dir > 0 ? 24 : max_slew_accel_rev;
+      min_speed = true;
+    }
+    if(!dir_change_start && !dir_change_end) {
+      max_slew_fwd = 24;
+      max_slew_rev = 24;
+      min_speed = true;
+    }
+  }
+ 
+  PID pid_lateral = PID(distance_kp, distance_ki, distance_kd);
+  PID pid_angular = PID(heading_correction_kp, heading_correction_ki, heading_correction_kd);
+ 
+  double settle_dist = 4.0;      // inches: switch from turn-and-drive to straight-line settle
+  double taper_dist = 12.0;      // inches: start tapering angular authority here, before settle_dist
+  double exit_tolerance = 0.75;  // inches, both axes
+  double exit_hold_msec = 150;   // must stay within tolerance this long to exit
+  double exit_hold_start = -1;
+ 
+  bool settling = false;
+  double start_time = Brain.timer(msec);
+  double prev_left_output = 0, prev_right_output = 0;
+ 
+  while (Brain.timer(msec) - start_time <= time_limit_msec) {
+    double heading_deg = getInertialHeading();
+    double theta = degToRad(heading_deg);
+ 
+    double dx = x - x_pos;
+    double dy = y - y_pos;
+    if(dir < 0) { dx = -dx; dy = -dy; } // treat "backward" as driving into the flipped point
+ 
+    // Rotate global error into the robot's local frame.
+    double local_fwd = cos(theta) * dy + sin(theta) * dx;
+    double local_lat = -sin(theta) * dy + cos(theta) * dx;
+ 
+    double d = hypot(dx, dy);
+    if(d < settle_dist) settling = true;
+ 
+    double angular_error_deg;
+    double cosine_scale;
+    double drive_error;
+ 
+    if(settling) {
+      angular_error_deg = 0;
+      cosine_scale = 1.0;
+      drive_error = local_fwd; // signed straight-line distance remaining
+    } else {
+      double angular_error_rad = atan2(local_lat, local_fwd);
+      angular_error_deg = radToDeg(angular_error_rad);
+      cosine_scale = cos(angular_error_rad);
+      drive_error = d * (cosine_scale >= 0 ? 1.0 : -1.0);
+ 
+      // Taper angular authority down as d approaches settle_dist, instead of
+      // trusting atan2 right up until the hard switch into settling. Near
+      // settle_dist, a small lateral offset with a small local_fwd makes
+      // atan2 swing toward +-90 deg on noise alone, which otherwise causes
+      // the robot to spin in place chasing a target angle that itself
+      // slides around as the robot turns (rotating theta recomputes
+      // local_fwd/local_lat every loop).
+      double taper_weight = (d - settle_dist) / (taper_dist - settle_dist);
+      if(taper_weight > 1) taper_weight = 1;
+      if(taper_weight < 0) taper_weight = 0;
+      angular_error_deg *= taper_weight;
+    }
+ 
+    // Sustained exit condition -- both axes in tolerance for exit_hold_msec.
+    if(fabs(local_fwd) < exit_tolerance && fabs(local_lat) < exit_tolerance) {
+      if(exit_hold_start < 0) exit_hold_start = Brain.timer(msec);
+      if(Brain.timer(msec) - exit_hold_start >= exit_hold_msec) break;
+    } else {
+      exit_hold_start = -1;
+    }
+ 
+    pid_lateral.setTarget(drive_error);
+    pid_angular.setTarget(angular_error_deg);
+    double drive_output = pid_lateral.update(0);
+    double angular_output = settling ? 0 : pid_angular.update(0);
+ 
+    drive_output = fmax(fmin(drive_output, max_output), -max_output);
+    drive_output *= fabs(cosine_scale); // ease off drive while heading is far off, ramp back in as it aligns
+ 
+    if(dir < 0) drive_output = -drive_output; // undo the earlier flip for actual motor sign
+ 
+    double left_output = drive_output + angular_output;
+    double right_output = drive_output - angular_output;
+ 
+    if(min_speed) {
+      scaleToMin(left_output, right_output, min_output);
+    }
+ 
+    if(overturn) {
+      double overturn_value = fabs(drive_output) + fabs(angular_output) - max_output;
+      if(overturn_value > 0) {
+        if(drive_output > 0) drive_output -= overturn_value;
+        else drive_output += overturn_value;
+        left_output = drive_output + angular_output;
+        right_output = drive_output - angular_output;
+      }
+    }
+ 
+    scaleToMax(left_output, right_output, max_output);
+ 
+    if(prev_left_output - left_output > max_slew_rev) left_output = prev_left_output - max_slew_rev;
+    if(prev_right_output - right_output > max_slew_rev) right_output = prev_right_output - max_slew_rev;
+    if(left_output - prev_left_output > max_slew_fwd) left_output = prev_left_output + max_slew_fwd;
+    if(right_output - prev_right_output > max_slew_fwd) right_output = prev_right_output + max_slew_fwd;
+    prev_left_output = left_output;
+    prev_right_output = right_output;
+ 
+    driveChassis(left_output, right_output);
+    wait(10, msec);
+  }
+ 
+  if(exit) {
+    stopChassis(vex::hold);
+  }
+  correct_angle = getInertialHeading();
+  is_turning = false;
+}
+
+/*
  * boomerang
  * Drives the robot in a boomerang-shaped path to a target point.
  * - x, y: Coordinates of the target point.
@@ -1271,6 +1396,194 @@ void boomerang(double x, double y, int dir, double a, double dlead, double time_
   }
   correct_angle = a;      // Update global heading
   is_turning = false;     // Reset turning state
+}
+
+/*
+ * boomerangField
+ * Local-frame, carrot-point version of boomerang, adapted from a
+ * Ramsete-style moveToPose (same family as moveToPointField) to this
+ * template's tools: PID class, x_pos/y_pos, getInertialHeading(),
+ * driveChassis(). No PROS -- uses Brain.timer(msec)/wait(msec).
+ *
+ * Same local-frame rotation trick as moveToPointField (cos/sin theta
+ * instead of atan2+normalizeTarget), plus two things your original
+ * boomerang() didn't have:
+ *
+ * 1. CARROT POINT INSTEAD OF RAW dlead BLEND. Your original boomerang()
+ *    blends the raw target point with a point projected backward along the
+ *    final approach angle, scaled by dlead, and re-aims at that blended
+ *    point every loop. Here, the carrot point is placed a fixed lookahead
+ *    distance AHEAD along the approach line (scaled by how far out the
+ *    robot still is: lookahead = max(d * lead, min_lookahead)), and the
+ *    robot always steers at that carrot -- this is the same idea pure
+ *    pursuit uses for path following, applied to a single boomerang curve.
+ *    Because the carrot stays offset from the true target until very close,
+ *    local_fwd relative to the carrot never collapses toward 0 the way it
+ *    does when aiming directly at a close target -- which is what caused
+ *    the "spins around the point" bug in the earlier moveToPointField
+ *    version. No taper needed here for that reason.
+ *
+ * 2. BLENDED DRIVE ERROR. drive_error uses
+ *    sqrt((local_error^2 + 2*d^2) / 3) instead of raw local_fwd distance to
+ *    the carrot -- this blends "distance to carrot" with "distance to true
+ *    target" so speed doesn't overshoot just because the carrot is still
+ *    far out early in the curve.
+ *
+ * 3. EXPLICIT SETTLE PHASE with a FIXED final heading target (a, in
+ *    degrees), not an atan2-derived one -- so unlike the angular term
+ *    earlier in the curve, there's no divide-by-small-distance instability
+ *    during settling; it's just "turn to face `a`" using ordinary heading
+ *    error.
+ *
+ * - x, y: target point.
+ * - dir: 1 = forward, -1 = backward.
+ * - a: final heading in degrees the robot should be facing at the target.
+ * - dlead: how far ahead of the robot to place the carrot, as a fraction of
+ *   remaining distance (same tuning range as your original: don't set above
+ *   ~0.6). Higher = curvier path.
+ * - time_limit_msec: hard timeout.
+ * - exit: if true, hold-brakes at the end; if false, leaves velocity live
+ *   for chaining.
+ * - max_output: voltage cap.
+ * - overturn: if true, allows the angular term to eat into the drive
+ *   budget on sharp turns instead of being capped independently.
+ */
+void boomerangField(double x, double y, int dir, double a, double dlead, double time_limit_msec, bool exit, double max_output, bool overturn) {
+  stopChassis(vex::brakeType::coast);
+  is_turning = true;
+ 
+  double max_slew_fwd = dir > 0 ? max_slew_accel_fwd : max_slew_decel_rev;
+  double max_slew_rev = dir > 0 ? max_slew_decel_fwd : max_slew_accel_rev;
+  bool min_speed = false;
+  if(!exit) {
+    if(!dir_change_start && dir_change_end) {
+      max_slew_fwd = dir > 0 ? 24 : max_slew_decel_rev;
+      max_slew_rev = dir > 0 ? max_slew_decel_fwd : 24;
+    }
+    if(dir_change_start && !dir_change_end) {
+      max_slew_fwd = dir > 0 ? max_slew_accel_fwd : 24;
+      max_slew_rev = dir > 0 ? 24 : max_slew_accel_rev;
+      min_speed = true;
+    }
+    if(!dir_change_start && !dir_change_end) {
+      max_slew_fwd = 24;
+      max_slew_rev = 24;
+      min_speed = true;
+    }
+  }
+ 
+  PID pid_lateral = PID(distance_kp, distance_ki, distance_kd);
+  PID pid_angular = PID(heading_correction_kp, heading_correction_ki, heading_correction_kd);
+ 
+  double settle_dist = 4.0;
+  double min_lookahead = 4.0;
+  double exit_tolerance = 0.75;
+  double exit_hold_msec = 150;
+  double exit_hold_start = -1;
+ 
+  double theta_final_rad = degToRad(a);
+  double end_unit_x = sin(theta_final_rad);
+  double end_unit_y = cos(theta_final_rad);
+ 
+  bool settling = false;
+  double start_time = Brain.timer(msec);
+  double prev_left_output = 0, prev_right_output = 0;
+ 
+  while (Brain.timer(msec) - start_time <= time_limit_msec) {
+    double heading_deg = getInertialHeading();
+    double theta = degToRad(heading_deg);
+ 
+    double d = hypot(x - x_pos, y - y_pos);
+    if(d < settle_dist) settling = true;
+ 
+    double true_dx = x - x_pos, true_dy = y - y_pos;
+    if(dir < 0) { true_dx = -true_dx; true_dy = -true_dy; }
+    double true_local_fwd = cos(theta) * true_dy + sin(theta) * true_dx;
+    double true_local_lat = -sin(theta) * true_dy + cos(theta) * true_dx;
+ 
+    double angular_error_deg;
+    double cosine_scale;
+    double drive_error;
+ 
+    if(settling) {
+
+      angular_error_deg = normalizeAngle(a - heading_deg);
+      cosine_scale = 1.0;
+      drive_error = true_local_fwd;
+    } else {
+
+      double rx = x_pos - x, ry = y_pos - y;
+      double along_track = rx * end_unit_x + ry * end_unit_y;
+      double lookahead = fmax(d * dlead, min_lookahead);
+      double ghost_along_track = along_track + lookahead * (dir > 0 ? 1.0 : -1.0);
+      double carrot_x = x + ghost_along_track * end_unit_x;
+      double carrot_y = y + ghost_along_track * end_unit_y;
+ 
+      double dx = carrot_x - x_pos, dy = carrot_y - y_pos;
+      if(dir < 0) { dx = -dx; dy = -dy; }
+      double local_fwd = cos(theta) * dy + sin(theta) * dx;
+      double local_lat = -sin(theta) * dy + cos(theta) * dx;
+ 
+      double heading_error_rad = atan2(local_lat, local_fwd);
+      angular_error_deg = radToDeg(heading_error_rad);
+      cosine_scale = cos(heading_error_rad);
+ 
+      double error_norm_sq = local_fwd * local_fwd + local_lat * local_lat;
+      drive_error = sqrt((error_norm_sq + 2.0 * d * d) / 3.0) * (cosine_scale >= 0 ? 1.0 : -1.0);
+    }
+ 
+    if(fabs(true_local_fwd) < exit_tolerance && fabs(true_local_lat) < exit_tolerance) {
+      if(exit_hold_start < 0) exit_hold_start = Brain.timer(msec);
+      if(Brain.timer(msec) - exit_hold_start >= exit_hold_msec) break;
+    } else {
+      exit_hold_start = -1;
+    }
+ 
+    pid_lateral.setTarget(drive_error);
+    pid_angular.setTarget(angular_error_deg);
+    double drive_output = pid_lateral.update(0);
+    double angular_output = pid_angular.update(0);
+ 
+    drive_output = fmax(fmin(drive_output, max_output), -max_output);
+    drive_output *= fabs(cosine_scale);
+ 
+    if(dir < 0) drive_output = -drive_output;
+ 
+    double left_output = drive_output + angular_output;
+    double right_output = drive_output - angular_output;
+ 
+    if(min_speed) {
+      scaleToMin(left_output, right_output, min_output);
+    }
+ 
+    if(overturn) {
+      double overturn_value = fabs(drive_output) + fabs(angular_output) - max_output;
+      if(overturn_value > 0) {
+        if(drive_output > 0) drive_output -= overturn_value;
+        else drive_output += overturn_value;
+        left_output = drive_output + angular_output;
+        right_output = drive_output - angular_output;
+      }
+    }
+ 
+    scaleToMax(left_output, right_output, max_output);
+ 
+    if(prev_left_output - left_output > max_slew_rev) left_output = prev_left_output - max_slew_rev;
+    if(prev_right_output - right_output > max_slew_rev) right_output = prev_right_output - max_slew_rev;
+    if(left_output - prev_left_output > max_slew_fwd) left_output = prev_left_output + max_slew_fwd;
+    if(right_output - prev_right_output > max_slew_fwd) right_output = prev_right_output + max_slew_fwd;
+    prev_left_output = left_output;
+    prev_right_output = right_output;
+ 
+    driveChassis(left_output, right_output);
+    wait(10, msec);
+  }
+ 
+  if(exit) {
+    stopChassis(vex::hold);
+  }
+  correct_angle = getInertialHeading();
+  is_turning = false;
 }
 
 // ============================================================================

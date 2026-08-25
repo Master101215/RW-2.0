@@ -1,9 +1,3 @@
 /bin
 /build
 compile_commands.json
-
-# Jekyll (docs/)
-docs/_site/
-docs/.jekyll-cache/
-docs/.jekyll-metadata
-docs/Gemfile.lock
