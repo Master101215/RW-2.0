@@ -60,7 +60,6 @@ void drawWatermark() {
 bool last_tuner_active = false;
 
 void update() {
-  double raw_h = getInertialHeading();  // or inertial_sensor.heading(degrees)
   double heading = normalizeTarget(getInertialHeading()); 
 
   bool showingTuner = tuner_active || tuner_finished;
@@ -132,15 +131,7 @@ int logPosition() {
 // wheels are enabled in robot-config.cpp.
 void trackPosition() {
   resetChassis();
-  if (using_horizontal_tracker && using_vertical_tracker) {
-    thread odom = thread(trackXYOdomWheel);
-  } else if (using_horizontal_tracker) {
-    thread odom = thread(trackXOdomWheel);
-  } else if (using_vertical_tracker) {
-    thread odom = thread(trackYOdomWheel);
-  } else {
-    thread odom = thread(trackNoOdomWheel);
-  }
+  trackOdom();
 }
 
 // ============================================================================

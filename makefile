@@ -12,18 +12,10 @@ SRC_C += $(wildcard src/*.c)
 SRC_C += $(wildcard src/*/*.cpp) 
 SRC_C += $(wildcard src/*/*.c)
 
-# mcl and pure-pursuit live in their own top-level folders
-SRC_C += $(wildcard mcl/src/*.cpp)
-SRC_C += $(wildcard mcl/src/*.c)
-SRC_C += $(wildcard pure-pursuit/src/*.cpp)
-SRC_C += $(wildcard pure-pursuit/src/*.c)
-
 OBJ = $(addprefix $(BUILD)/, $(addsuffix .o, $(basename $(SRC_C))) )
 
 # location of include files that c and cpp files depend on
 SRC_H  = $(wildcard include/*.h)
-SRC_H += $(wildcard mcl/include/*.h)
-SRC_H += $(wildcard pure-pursuit/include/*.h)
 
 # additional dependancies
 SRC_A  = makefile

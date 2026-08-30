@@ -748,49 +748,8 @@ void correctHeading() {
 
 /*
  * trackOdom
- * Replaces trackNoOdomWheel / trackXOdomWheel / trackYOdomWheel /
- * trackXYOdomWheel with a single function, structured to match how LemLib's
- * TrackingWheelOdometry::update() actually works (calhighrobotics/push_back_x
- * uses LemLib for odometry -- see their firmware/LemLib.a and
- * include/lemlib/chassis/odom.hpp -- and LemLib's own tracking
- * implementation is itself an application of the same 5225A/Pilons paper
- * this template's math is already based on: http://thepilons.ca/wp-content/uploads/2018/10/Tracking.pdf).
- *
- * The core formula is unchanged from your original functions -- it was
- * already correct and matches LemLib's:
- *
- *   local_axis_delta = 2*sin(dtheta/2) * (raw_delta/dtheta + offset)   [dtheta != 0]
- *   local_axis_delta = raw_delta                                       [dtheta == 0]
- *
- * applied independently per axis (horizontal tracker -> local X, vertical
- * tracker/drive encoders -> local Y), then rotated into the global frame by
- * (previous_heading + dtheta/2) -- same "rotate by the average heading
- * during this timestep" trick your code already used.
- *
- * What changes vs. the four separate functions:
- *
- * 1. ONE function instead of four near-duplicates, driven by the existing
- *    using_horizontal_tracker / using_vertical_tracker flags in
- *    robot-config.cpp, so switching tracker configurations doesn't mean
- *    switching which function you call.
- *
- * 2. FIXES THE trackYOdomWheel BUG: that function never computed a local_x
- *    term at all -- it silently assumed zero sideways motion always, so any
- *    lateral slip (defense contact, turning scrub) was invisible and
- *    permanently corrupted x_pos with no correction. Here, when there's no
- *    horizontal tracker, local_x is explicitly set to 0 with a comment
- *    saying why, instead of just never being computed -- same real-world
- *    limitation (you cannot sense an axis you have no sensor for), but now
- *    it's a documented, deliberate choice instead of an accidental gap, and
- *    it goes through the exact same rotation math as every other case so
- *    there's no separate/inconsistent polar-angle branch like the original
- *    trackYOdomWheel had.
- *
- * 3. Falls back to drivetrain wheel encoders for the Y axis if there's no
- *    vertical tracker (matching your original trackXOdomWheel behavior --
- *    this is better than LemLib's own default of just returning 0 for a
- *    missing axis, at the cost of being slip-prone under load).
- */
+ * Replaces trackNoOdomWheel / trackXOdomWheel / trackYOdomWheel / trackXYOdomWheel with a single function
+*/
 void trackOdom() {
   resetChassis();
   double prev_heading_rad = 0;
