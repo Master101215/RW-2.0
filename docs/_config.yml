@@ -45,10 +45,8 @@ callouts:
     title: Tip
     color: green
 
-footer_content: >-
-  RW 2.0 &mdash; a VEX V5 autonomous template.
-  Docs generated from the source in
-  <a href="https://github.com/Master101215/RW-2.0">Master101215/RW-2.0</a>.
+# Footer text lives in _includes/footer_custom.html (and nav_footer_custom.html
+# for the mobile nav). just-the-docs v0.12 ignores the old footer_content key.
 
 # ── Build ──────────────────────────────────────────────────────────────────
 exclude:
