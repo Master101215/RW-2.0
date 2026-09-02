@@ -1,3 +1,69 @@
-<p class="text-small text-grey-dk-000 mb-0">
-  Written with <span role="img" aria-label="love">❤️</span> by Rian &nbsp;|&nbsp; 4610W
-</p>
+{%- comment -%}
+  Sidebar footer credit.
+
+  just-the-docs renders this include in two places, both driven by this one file:
+    - desktop: the bottom of the sidebar   (_includes/components/sidebar.html)
+    - mobile:  the bottom of the page      (_includes/components/footer.html),
+               since there is no persistent sidebar at that width.
+
+  Styles are inline so this file is self-contained and survives a theme bump.
+  Colours are expressed as translucent greys + currentColor so they sit
+  correctly on the dark scheme without hardcoding the palette.
+{%- endcomment -%}
+
+<style>
+  .rw-credit {
+    padding-top: 0.85rem;
+    border-top: 1px solid rgba(150, 150, 160, 0.22);
+    line-height: 1.55;
+  }
+
+  .rw-credit__line {
+    display: block;
+    font-size: 0.75rem;
+    opacity: 0.72;
+  }
+
+  .rw-credit__name {
+    font-weight: 600;
+    opacity: 1;
+  }
+
+  .rw-credit__heart {
+    display: inline-block;
+    font-size: 0.82em;
+    vertical-align: 0.04em;
+    margin: 0 0.12em;
+    animation: rw-heartbeat 3s ease-in-out infinite;
+  }
+
+  @keyframes rw-heartbeat {
+    0%, 60%, 100% { transform: scale(1); }
+    68%           { transform: scale(1.25); }
+    76%           { transform: scale(1); }
+    84%           { transform: scale(1.15); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rw-credit__heart { animation: none; }
+  }
+
+  .rw-credit__team {
+    display: inline-block;
+    margin-top: 0.45rem;
+    padding: 0.12rem 0.5rem;
+    border: 1px solid rgba(150, 150, 160, 0.32);
+    border-radius: 999px;
+    font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.09em;
+    opacity: 0.68;
+  }
+</style>
+
+<div class="rw-credit">
+  <span class="rw-credit__line">
+    Written with <span class="rw-credit__heart" role="img" aria-label="love">❤️</span> by <span class="rw-credit__name">Rian</span>
+  </span>
+  <span class="rw-credit__team">4610W</span>
+</div>
