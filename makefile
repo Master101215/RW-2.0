@@ -22,8 +22,6 @@ SRC_A  = makefile
 
 # project header file locations
 INC_F  = include
-INC_F += mcl/include
-INC_F += pure-pursuit/include
 
 # build targets
 all: $(BUILD)/$(PROJECT).bin
