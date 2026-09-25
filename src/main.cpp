@@ -129,10 +129,9 @@ int logPosition() {
 
 // Starts the correct odometry-tracking thread based on which tracking
 // wheels are enabled in robot-config.cpp.
-void trackPosition() {
-  resetChassis();
-  trackOdom();
-}
+  void trackPosition() {
+    static task odomTask([]() -> int { trackOdom(); return 0; });  
+  }
 
 // ============================================================================
 // SUBSYSTEM PID TASKS
@@ -171,6 +170,7 @@ void trackPosition() {
 // ============================================================================
 void telop() {
   vex::task updater(updateTask);
+  resetChassis();
   trackPosition();
   vex::task logposition(logPosition);
   update();
@@ -201,10 +201,8 @@ void telop() {
 
       case SPLIT_ARCADE:
       default: {
-        int fwd  = controller_1.Axis3.position();
-        int turn = controller_1.Axis1.position();
-        left_pct  = fwd + turn;
-        right_pct = fwd - turn;
+        left_pct = controller_1.Axis3.value() + controller_1.Axis1.value()*2;
+        right_pct = controller_1.Axis3.value() - controller_1.Axis1.value()*2;
         break;
       }
     }
@@ -232,6 +230,7 @@ void telop() {
 // AUTONOMOUS
 // ============================================================================
 void auton() {
+  resetChassis();
   trackPosition();
   vex::task updater(updateTask);
   vex::task logposition(logPosition);
@@ -242,7 +241,7 @@ void auton() {
   // Start subsystem PID task(s) and reset subsystem encoders here, e.g.:
   // task armTask(armPIDLoop);
 
-  // Write your autonomous routine here.
+  // Write your autonomous routine below.
 }
 
 int main() {
